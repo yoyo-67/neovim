@@ -33,12 +33,14 @@ find_package(Libuv 1.28.0 REQUIRED)
 find_package(Lpeg REQUIRED)
 find_package(Treesitter 0.25.0 REQUIRED)
 find_package(UTF8proc REQUIRED)
+find_package(Bidi REQUIRED)
 
 target_link_libraries(main_lib INTERFACE
   iconv
   lpeg
   treesitter
-  utf8proc)
+  utf8proc
+  bidi)
 target_link_libraries(nlua0 PUBLIC lpeg)
 
 if(ENABLE_LIBINTL)

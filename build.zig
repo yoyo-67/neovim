@@ -94,6 +94,7 @@ pub fn build(b: *std.Build) !void {
     } else libluv;
 
     const utf8proc = b.dependency("utf8proc", .{ .target = target, .optimize = optimize });
+    const bidi = b.dependency("bidi", .{ .target = target, .optimize = optimize });
     const unibilium = if (use_unibilium) b.lazyDependency("unibilium", .{ .target = target, .optimize = optimize }) else null;
     // TODO(bfredl): fix upstream bugs with UBSAN
     const treesitter = b.dependency("treesitter", .{ .target = target, .optimize = .ReleaseFast });
@@ -316,6 +317,7 @@ pub fn build(b: *std.Build) !void {
     nvim_exe.linkLibrary(libluv);
     if (iconv) |dep| nvim_exe.linkLibrary(dep.artifact("iconv"));
     nvim_exe.linkLibrary(utf8proc.artifact("utf8proc"));
+    nvim_exe.linkLibrary(bidi.artifact("bidi"));
     if (unibilium) |u| nvim_exe.linkLibrary(u.artifact("unibilium"));
     nvim_exe.linkLibrary(treesitter.artifact("tree-sitter"));
     if (is_windows) {

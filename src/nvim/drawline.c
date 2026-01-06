@@ -1138,6 +1138,7 @@ int win_line(win_T *wp, linenr_T lnum, int startrow, int endrow, int col_rows, b
   int conceal_attr = win_hl_attr(wp, HLF_CONCEAL);
   bool is_concealing = false;
   bool did_wcol = false;
+  bool did_bidi_wcol_translate = false;  // Flag to track if w_wcol was translated for BiDi
 #define vcol_hlc(wlv) ((wlv).vcol - (wlv).vcol_off_co)
 
   assert(startrow < endrow);
@@ -2867,7 +2868,17 @@ int win_line(win_T *wp, linenr_T lnum, int startrow, int endrow, int col_rows, b
       draw_virt_text(wp, buf, win_col_offset, &wlv.col, wlv.row);
       // Set increasing virtual columns in grid->vcols[] to set correct curswant
       // (or "coladd" for 'virtualedit') when clicking after end of line.
+      if (in_curline && p_bidi) {
+        bidi_set_store_for_cursor(true);  // Store l2v mapping for this line
+      }
       wlv_put_linebuf(wp, &wlv, wlv.col, true, bg_attr, SLF_INC_VCOL);
+
+      // Apply BiDi cursor translation after line reordering
+      if (in_curline && p_bidi && !did_bidi_wcol_translate) {
+        wp->w_wcol = bidi_get_visual_col(wp->w_wcol);
+        did_bidi_wcol_translate = true;
+      }
+
       wlv.row++;
 
       // Update w_cline_height and w_cline_folded if the cursor line was
@@ -3137,7 +3148,18 @@ end_check:
         draw_virt_text(wp, buf, win_col_offset, &draw_col, wlv.row);
       }
 
+      if (in_curline && p_bidi && !did_bidi_wcol_translate) {
+        bidi_set_store_for_cursor(true);  // Store l2v mapping for cursor line
+      }
       wlv_put_linebuf(wp, &wlv, draw_col, true, bg_attr, wrap ? SLF_WRAP : 0);
+
+      // Apply BiDi cursor translation after line reordering
+      // Only translate once per line (on first segment for wrapped lines)
+      if (in_curline && p_bidi && !did_bidi_wcol_translate) {
+        wp->w_wcol = bidi_get_visual_col(wp->w_wcol);
+        did_bidi_wcol_translate = true;
+      }
+
       if (wrap) {
         int current_row = wlv.row;
         int dummy_col = 0;  // unused
