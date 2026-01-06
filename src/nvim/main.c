@@ -59,6 +59,7 @@
 #include "nvim/gettext_defs.h"
 #include "nvim/globals.h"
 #include "nvim/grid.h"
+#include "bidi.h"  // BiDi library for RTL support
 #include "nvim/hashtab.h"
 #include "nvim/highlight.h"
 #include "nvim/highlight_group.h"
@@ -192,6 +193,10 @@ static bool event_teardown(void)
 /// Needed for unit tests.
 void early_init(mparm_T *paramp)
 {
+  // Verify BiDi library FFI connection
+  int bidi_result = bidi_test_connection();
+  assert(bidi_result == 42 && "BiDi library FFI connection failed!");
+
   os_hint_priority();
   estack_init();
   cmdline_init();

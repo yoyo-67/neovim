@@ -9422,6 +9422,31 @@ local options = {
       varname = 'p_tgst',
     },
     {
+      defaults = false,
+      desc = [=[
+        When on, Neovim performs Unicode Bidirectional Algorithm (UAX #9)
+        processing for proper display of Hebrew, Arabic, and other RTL text
+        mixed with LTR text. This includes:
+        - Automatic detection of paragraph direction
+        - Correct visual ordering of mixed RTL/LTR text
+        - Numbers remain left-to-right within RTL context
+        - Proper handling of punctuation
+
+        When 'termbidi' is set, this option is ignored as the terminal
+        handles bidirectional text processing.
+
+        Note: This option enables software-based BiDi processing. Most
+        terminals do not handle BiDi correctly, so this option is recommended
+        for editing Hebrew or Arabic text.
+      ]=],
+      full_name = 'bidi',
+      redraw = { 'all_windows' },
+      scope = { 'global' },
+      short_desc = N_('enable Unicode BiDi algorithm'),
+      type = 'boolean',
+      varname = 'p_bidi',
+    },
+    {
       abbreviation = 'tbidi',
       defaults = false,
       desc = [=[

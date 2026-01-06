@@ -36,6 +36,14 @@ enum {
   SLF_INC_VCOL  = 4,
 };
 
+/// BiDi cursor position translation
+/// Get the visual column for a logical column using BiDi mapping
+int bidi_get_visual_col(int logical_col);
+/// Clear the BiDi cursor mapping
+void bidi_clear_cursor_l2v(void);
+/// Set flag to store l2v mapping on next BiDi reorder (for cursor line)
+void bidi_set_store_for_cursor(bool store);
+
 /// Put a ASCII character in a screen cell.
 ///
 /// If `x` is a compile time constant, schar_from_ascii(x) will also be.

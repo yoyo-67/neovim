@@ -85,3 +85,5 @@ tags
 /contrib/result-*
 
 CMakeUserPresets.json
+deps/bidi/.zig-cache
+deps/bidi/zig-out

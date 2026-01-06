@@ -19,6 +19,7 @@
 
 #include "nvim/api/private/defs.h"
 #include "nvim/arabic.h"
+#include "bidi.h"
 #include "nvim/ascii_defs.h"
 #include "nvim/buffer_defs.h"
 #include "nvim/decoration.h"
@@ -42,6 +43,44 @@
 // compared with previous contents to calculate smallest delta.
 // Per-cell attributes
 static size_t linebuf_size = 0;
+
+// BiDi logical-to-visual mapping for cursor position translation
+// Stored after line_do_bidi_reorder() processes a line
+#define BIDI_L2V_MAX 4096
+static int32_t bidi_cursor_l2v[BIDI_L2V_MAX];
+static int bidi_cursor_l2v_len = 0;
+static int bidi_cursor_col_offset = 0;  // Column offset where BiDi text starts
+static bool bidi_store_for_cursor = false;  // Flag: store l2v mapping for cursor line
+
+/// Get the visual column for a logical column using BiDi mapping
+/// @param logical_col  The logical column position (absolute screen column)
+/// @return Visual column position, or logical_col if no mapping available
+int bidi_get_visual_col(int logical_col)
+{
+  if (bidi_cursor_l2v_len == 0 || logical_col < 0) {
+    return logical_col;
+  }
+  // Convert absolute column to relative index (subtract offset)
+  int relative_idx = logical_col - bidi_cursor_col_offset;
+  if (relative_idx < 0 || relative_idx >= bidi_cursor_l2v_len) {
+    return logical_col;
+  }
+  // Get visual position from l2v mapping, add back the offset
+  return (int)bidi_cursor_l2v[relative_idx] + bidi_cursor_col_offset;
+}
+
+/// Clear the BiDi cursor mapping (call when no BiDi reordering needed)
+void bidi_clear_cursor_l2v(void)
+{
+  bidi_cursor_l2v_len = 0;
+  bidi_cursor_col_offset = 0;
+}
+
+/// Set flag to store l2v mapping on next BiDi reorder (for cursor line)
+void bidi_set_store_for_cursor(bool store)
+{
+  bidi_store_for_cursor = store;
+}
 
 // Used to cache glyphs which doesn't fit an a sizeof(schar_T) length UTF-8 string.
 // Then it instead stores an index into glyph_cache.keys[] which is a flat char array.
@@ -304,6 +343,112 @@ next:
     c0 = c0next;
     c1 = c1next;
   }
+}
+
+/// Perform Unicode BiDi reordering on a line buffer.
+/// This reorders characters, attributes, and vcols for correct RTL display.
+void line_do_bidi_reorder(schar_T *chars, sattr_T *attrs, colnr_T *vcols, int cols)
+{
+  if (cols <= 0) {
+    return;
+  }
+
+  // Maximum line width we support for BiDi processing
+  // Use stack allocation for reasonable line lengths
+  #define BIDI_MAX_COLS 4096
+  if (cols > BIDI_MAX_COLS) {
+    return;  // Line too long, skip BiDi processing
+  }
+
+  // Extract first codepoint from each cell to build text array for BiDi
+  uint32_t text[BIDI_MAX_COLS];
+  for (int i = 0; i < cols; i++) {
+    if (chars[i] == 0) {
+      // Second cell of double-width character - use a placeholder
+      text[i] = ' ';
+    } else {
+      int c0, c1;
+      schar_get_first_two_codepoints(chars[i], &c0, &c1);
+      text[i] = (uint32_t)c0;
+    }
+  }
+
+  // Quick check: if no RTL characters, nothing to do
+  if (!bidi_has_rtl(text, (size_t)cols)) {
+    bidi_cursor_l2v_len = 0;  // Clear mapping when no RTL
+    return;
+  }
+
+  // Allocate working arrays for BiDi algorithm
+  int32_t v2l[BIDI_MAX_COLS];  // visual to logical mapping
+  int32_t l2v[BIDI_MAX_COLS];  // logical to visual mapping
+  uint8_t levels[BIDI_MAX_COLS];
+
+  // Process the line with BiDi algorithm
+  bidi_process_line(text, (size_t)cols, v2l, l2v, levels);
+
+  // Check if any reordering is needed (v2l should differ from identity)
+  bool needs_reorder = false;
+  for (int i = 0; i < cols; i++) {
+    if (v2l[i] != i) {
+      needs_reorder = true;
+      break;
+    }
+  }
+
+  if (!needs_reorder) {
+    if (bidi_store_for_cursor) {
+      bidi_cursor_l2v_len = 0;  // Clear mapping when no reordering needed
+    }
+    return;
+  }
+
+  // Store l2v mapping for cursor position translation (only for cursor line)
+  if (bidi_store_for_cursor && cols <= BIDI_L2V_MAX) {
+    memcpy(bidi_cursor_l2v, l2v, (size_t)cols * sizeof(int32_t));
+    bidi_cursor_l2v_len = cols;
+    bidi_store_for_cursor = false;  // Only store once
+  }
+
+  // Use stack-allocated scratch buffers (we already limited cols to BIDI_MAX_COLS)
+  schar_T scratch_char[BIDI_MAX_COLS];
+  sattr_T scratch_attr[BIDI_MAX_COLS];
+  colnr_T scratch_vcol[BIDI_MAX_COLS];
+
+  memcpy(scratch_char, chars, (size_t)cols * sizeof(schar_T));
+  memcpy(scratch_attr, attrs, (size_t)cols * sizeof(sattr_T));
+  memcpy(scratch_vcol, vcols, (size_t)cols * sizeof(colnr_T));
+
+  // Reorder using visual-to-logical mapping
+  // v2l[visual_pos] = logical_pos
+  for (int visual = 0; visual < cols; visual++) {
+    int logical = v2l[visual];
+    if (logical >= 0 && logical < cols) {
+      // Handle double-width characters
+      if (scratch_char[logical] != 0) {
+        chars[visual] = scratch_char[logical];
+        attrs[visual] = scratch_attr[logical];
+        vcols[visual] = scratch_vcol[logical];
+        // Check if this is a double-width character
+        if (logical + 1 < cols && scratch_char[logical + 1] == 0) {
+          // The next cell is the second half of a double-width char
+          // We need to place it after this one
+          if (visual + 1 < cols) {
+            chars[visual + 1] = 0;
+            attrs[visual + 1] = scratch_attr[logical + 1];
+            vcols[visual + 1] = scratch_vcol[logical + 1];
+          }
+        }
+      } else {
+        // This is the second cell of a double-width character
+        // It should have been handled by the first cell, but set it anyway
+        chars[visual] = 0;
+        attrs[visual] = scratch_attr[logical];
+        vcols[visual] = scratch_vcol[logical];
+      }
+    }
+  }
+  #undef BIDI_MAX_COLS
 }
 
 /// clear a line in the grid starting at "off" until "width" characters
@@ -704,6 +849,13 @@ void grid_put_linebuf(ScreenGrid *grid, int row, int coloff, int col, int endcol
 
   if (p_arshape && !p_tbidi && endcol > col) {
     line_do_arabic_shape(linebuf_char + col, endcol - col);
+  }
+
+  // BiDi reordering - after Arabic shaping, before rendering
+  if (p_bidi && !p_tbidi && endcol > col) {
+    bidi_cursor_col_offset = col;  // Store offset for cursor translation
+    line_do_bidi_reorder(linebuf_char + col, linebuf_attr + col,
+                         linebuf_vcol + col, endcol - col);
   }
 
   if (bg_attr) {

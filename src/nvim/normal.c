@@ -45,6 +45,7 @@
 #include "nvim/globals.h"
 #include "nvim/grid.h"
 #include "nvim/help.h"
+#include "bidi.h"
 #include "nvim/highlight.h"
 #include "nvim/highlight_defs.h"
 #include "nvim/keycodes.h"
@@ -3688,6 +3689,64 @@ static void nv_scroll(cmdarg_T *cap)
   beginline(BL_SOL | BL_FIX);
 }
 
+/// Try to move cursor visually in BiDi text
+/// @param direction +1 for right, -1 for left
+/// @return true if moved, false if should use normal movement
+static bool bidi_move_cursor_visual(int direction)
+{
+  if (!p_bidi) {
+    return false;
+  }
+
+  char *line = get_cursor_line_ptr();
+  if (line == NULL || *line == NUL) {
+    return false;
+  }
+
+  // Check if line has RTL content
+  size_t line_len = strlen(line);
+
+  // Convert line to codepoints and build byte offset array
+  #define MAX_LINE_CHARS 4096
+  uint32_t codepoints[MAX_LINE_CHARS];
+  int32_t byte_offsets[MAX_LINE_CHARS];
+  size_t char_count = 0;
+
+  size_t byte_idx = 0;
+  while (byte_idx < line_len && char_count < MAX_LINE_CHARS) {
+    byte_offsets[char_count] = (int32_t)byte_idx;
+    int char_len = utfc_ptr2len(line + byte_idx);
+    codepoints[char_count] = (uint32_t)utf_ptr2char(line + byte_idx);
+    char_count++;
+    byte_idx += (size_t)char_len;
+  }
+
+  if (char_count == 0) {
+    return false;
+  }
+
+  // Check if there's any RTL text
+  if (!bidi_has_rtl(codepoints, char_count)) {
+    return false;
+  }
+
+  // Get current cursor byte position
+  int32_t cur_byte = (int32_t)curwin->w_cursor.col;
+
+  // Call visual cursor movement
+  int32_t new_byte = bidi_cursor_move_visual(
+    codepoints, byte_offsets, char_count, cur_byte, direction);
+
+  if (new_byte < 0) {
+    return false;  // At boundary or error, use normal movement
+  }
+
+  // Move cursor to new position
+  curwin->w_cursor.col = (colnr_T)new_byte;
+  curwin->w_set_curswant = true;
+  return true;
+}
+
 /// Cursor right commands.
 static void nv_right(cmdarg_T *cap)
 {
@@ -3713,7 +3772,13 @@ static void nv_right(cmdarg_T *cap)
   }
 
   for (n = cap->count1; n > 0; n--) {
-    if ((!past_line && oneright() == false)
+    // Try BiDi visual movement first (but NOT during operator-pending mode)
+    bool moved = false;
+    if (cap->oap->op_type == OP_NOP) {
+      moved = bidi_move_cursor_visual(1);  // +1 for right
+    }
+
+    if ((!past_line && !moved && oneright() == false)
         || (past_line && *get_cursor_pos_ptr() == NUL)) {
       //    <Space> wraps to next line if 'whichwrap' has 's'.
       //        'l' wraps to next line if 'whichwrap' has 'l'.
@@ -3783,7 +3848,13 @@ static void nv_left(cmdarg_T *cap)
   cap->oap->motion_type = kMTCharWise;
   cap->oap->inclusive = false;
   for (n = cap->count1; n > 0; n--) {
-    if (oneleft() == false) {
+    // Try BiDi visual movement first (but NOT during operator-pending mode)
+    bool moved = false;
+    if (cap->oap->op_type == OP_NOP) {
+      moved = bidi_move_cursor_visual(-1);  // -1 for left
+    }
+
+    if (!moved && oneleft() == false) {
       // <BS> and <Del> wrap to previous line if 'whichwrap' has 'b'.
       //                 'h' wraps to previous line if 'whichwrap' has 'h'.
       //           CURS_LEFT wraps to previous line if 'whichwrap' has '<'.
@@ -4838,12 +4909,56 @@ static void nv_subst(cmdarg_T *cap)
   }
 }
 
+/// Get byte position of character at visual column in BiDi text
+/// Returns -1 if not applicable or error
+static int32_t bidi_get_visual_char_byte(int visual_col)
+{
+  if (!p_bidi) return -1;
+
+  char *line = get_cursor_line_ptr();
+  if (line == NULL || *line == NUL) return -1;
+
+  size_t line_len = strlen(line);
+
+  // Convert to codepoints (using Neovim's UTF-8 functions)
+  #define MAX_LINE_CHARS 4096
+  uint32_t codepoints[MAX_LINE_CHARS];
+  int32_t byte_offsets[MAX_LINE_CHARS];
+  size_t char_count = 0;
+
+  size_t byte_idx = 0;
+  while (byte_idx < line_len && char_count < MAX_LINE_CHARS) {
+    byte_offsets[char_count] = (int32_t)byte_idx;
+    int char_len = utfc_ptr2len(line + byte_idx);
+    codepoints[char_count] = (uint32_t)utf_ptr2char(line + byte_idx);
+    char_count++;
+    byte_idx += (size_t)char_len;
+  }
+
+  if (char_count == 0) return -1;
+
+  // Call Zig function for BiDi processing
+  return bidi_visual_col_to_byte(codepoints, byte_offsets, char_count, visual_col);
+}
+
 /// Abbreviated commands.
 static void nv_abbrev(cmdarg_T *cap)
 {
   if (cap->cmdchar == K_DEL || cap->cmdchar == K_KDEL) {
     cap->cmdchar = 'x';                 // DEL key behaves like 'x'
   }
+
+  // For 'x' in BiDi mode: delete the character at visual cursor position
+  if (cap->cmdchar == 'x' && p_bidi && !VIsual_active) {
+    // w_wcol is the visual screen column (after BiDi translation)
+    // Use BiDi mapping to find byte position of visually displayed character
+    int visual_col = (int)curwin->w_wcol;
+    int32_t target_byte = bidi_get_visual_char_byte(visual_col);
+    if (target_byte >= 0 && target_byte != (int32_t)curwin->w_cursor.col) {
+      curwin->w_cursor.col = (colnr_T)target_byte;
+    }
+  }
+
   // in Visual mode these commands are operators
   if (VIsual_active) {
     v_visop(cap);
@@ -6294,6 +6409,15 @@ static void nv_object(cmdarg_T *cap)
 {
   bool flag;
   bool include;
+
+  // For BiDi mode: translate visual cursor position to logical before text object selection
+  if (p_bidi && !VIsual_active) {
+    int visual_col = (int)curwin->w_wcol;
+    int32_t target_byte = bidi_get_visual_char_byte(visual_col);
+    if (target_byte >= 0 && target_byte != (int32_t)curwin->w_cursor.col) {
+      curwin->w_cursor.col = (colnr_T)target_byte;
+    }
+  }
 
   if (cap->cmdchar == 'i') {
     include = false;        // "ix" = inner object: exclude white space

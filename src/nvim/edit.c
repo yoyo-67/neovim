@@ -81,6 +81,7 @@
 #include "nvim/undo.h"
 #include "nvim/vim_defs.h"
 #include "nvim/window.h"
+#include "bidi.h"
 
 typedef struct {
   VimState state;

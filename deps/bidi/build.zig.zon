@@ -1,0 +1,7 @@
+.{
+    .name = .bidi,
+    .version = "0.1.0",
+    .fingerprint = 0xc29267646bdc6aaf,
+    .paths = .{""},
+    .dependencies = .{},
+}
